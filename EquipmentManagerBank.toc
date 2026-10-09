@@ -1,0 +1,15 @@
+## Interface: 16001
+## Interface-Forever: 16001
+## Interface-Classic: 11506
+## Interface-BCC: 20504
+## Interface-Wrath: 30403
+## Interface-Cata: 40400
+## Interface-Retail: 110100, 120000
+## Title: Equipment Manager Bank Options
+## Notes: Adds Outfitter-style bank options (Deposit/Withdraw) to the default Equipment Manager on right-click.
+## Author: chwaraf
+## Version: 1.0.0
+## Category: Bags & Inventory
+## DefaultState: enabled
+## SavedVariables: EquipmentManagerBankDB
+EquipmentManagerBank.lua
