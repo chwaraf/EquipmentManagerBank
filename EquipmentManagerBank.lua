@@ -23,6 +23,7 @@ EMB.Strings = {
     MustBeAtBank = "You must have your bank open to use bank options",
     NoItemsToDeposit = "No equipped items in set '%s' to deposit.",
     NoUniqueItems = "No equipped unique items in set '%s' to deposit.",
+    NoUniqueBagItems = "No unique items in the bags for set '%s' to deposit.",
     NoItemsToWithdraw = "No items in set '%s' found in the bank.",
     NoUniqueItemsToWithdraw = "No unique items in set '%s' found in the bank.",
     NoOtherItemsToDeposit = "No equipped items from other sets to deposit.",
@@ -608,6 +609,61 @@ function EMB.DepositSet(setID, uniqueOnly)
     StartTransfers(actions, string.format(EMB.Strings.Depositing, #actions, desc, setName))
 end
 
+-- Action-bar smart banking uses bagged items only, leaving the equipment-manager
+-- Deposit options' equipped-only behavior unchanged.
+function EMB.DepositUniqueBagItems(setID)
+    if not IsBankOpen() then
+        PrintMessage(EMB.Strings.MustBeAtBank)
+        return
+    end
+
+    local setName = (C_EquipmentSet.GetEquipmentSetInfo and C_EquipmentSet.GetEquipmentSetInfo(setID)) or "Set"
+    local items = GetSetItems(setID)
+    local otherSetItemIDs = GetOtherSetItemIDs(setID)
+    local toDeposit = {}
+
+    for _, item in ipairs(items) do
+        if item.locationType == "bag"
+            and not otherSetItemIDs[item.itemID]
+            and Container.GetItemID(item.bag, item.slot) == item.itemID then
+            local info = Container.GetItemInfo(item.bag, item.slot)
+            if not (info and info.isLocked) then
+                table.insert(toDeposit, {
+                    actionType = "BAG_TO_BANK",
+                    fromBag = item.bag,
+                    fromSlot = item.slot,
+                    itemID = item.itemID,
+                    itemLink = item.link,
+                })
+            end
+        end
+    end
+
+    if #toDeposit == 0 then
+        PrintMessage(string.format(EMB.Strings.NoUniqueBagItems, setName))
+        return
+    end
+
+    local emptyBankSlots = GetEmptyBankSlots()
+    if #emptyBankSlots < #toDeposit then
+        PrintMessage(string.format("Can't deposit all items: only %d bank slots free, %d needed.", #emptyBankSlots, #toDeposit))
+        while #toDeposit > #emptyBankSlots do
+            table.remove(toDeposit)
+        end
+        if #toDeposit == 0 then return end
+    end
+
+    local actions = {}
+    for i, item in ipairs(toDeposit) do
+        local targetSlot = emptyBankSlots[i]
+        item.toBag = targetSlot.bag
+        item.toSlot = targetSlot.slot
+        table.insert(actions, item)
+    end
+
+    StartTransfers(actions, string.format(EMB.Strings.Depositing, #actions, "unique items", setName))
+end
+
 -- Withdraw items for this set from the bank. With uniqueOnly, leave shared items alone.
 function EMB.WithdrawSet(setID, uniqueOnly)
     if not IsBankOpen() then
@@ -882,6 +938,161 @@ end
 EMB.OpenContextMenu = OpenContextMenu
 
 -------------------------------------------------------------------------------
+-- Action Bar Equipment Set Icons
+-------------------------------------------------------------------------------
+
+local actionButtonPrefixes = {
+    "ActionButton",
+    "MainMenuBarActionButton",
+    "MultiBarBottomLeftButton",
+    "MultiBarBottomRightButton",
+    "MultiBarLeftButton",
+    "MultiBarRightButton",
+    "MultiBar5Button",
+    "MultiBar6Button",
+    "MultiBar7Button",
+    "MultiBar8Button",
+    "BonusActionButton",
+    "OverrideActionBarButton",
+}
+
+local function GetEquipmentSetIDFromActionButton(button)
+    local actionSlot = button.action
+    if not actionSlot and button.GetAttribute then
+        actionSlot = button:GetAttribute("action")
+    end
+    if not actionSlot and ActionButton_GetPagedID then
+        actionSlot = ActionButton_GetPagedID(button)
+    end
+    if not actionSlot then return nil end
+
+    local actionType, actionID
+    if GetActionInfo then
+        actionType, actionID = GetActionInfo(actionSlot)
+    end
+    if not actionType and C_ActionBar and C_ActionBar.GetActionInfo then
+        actionType, actionID = C_ActionBar.GetActionInfo(actionSlot)
+    end
+
+    if type(actionType) == "table" then
+        actionID = actionType.actionID or actionType.id or actionID
+        actionType = actionType.actionType or actionType.type
+    end
+
+    if actionType ~= "equipmentset" then return nil end
+    if type(actionID) == "string" and C_EquipmentSet and C_EquipmentSet.GetEquipmentSetID then
+        actionID = C_EquipmentSet.GetEquipmentSetID(actionID)
+    end
+    return actionID
+end
+
+local function UpdateActionButtonBankMode(button)
+    if not button or not button.GetAttribute or not button.SetAttribute then return end
+    if InCombatLockdown and InCombatLockdown() then return end
+
+    local setID = GetEquipmentSetIDFromActionButton(button)
+    if IsBankOpen() and setID then
+        if not button._embBankRightClickOverride then
+            button._embOriginalType2 = button:GetAttribute("type2")
+            button._embBankRightClickOverride = true
+        end
+        if button:GetAttribute("type2") ~= "" then
+            -- Let the addon handle right-click while preserving normal left-click equip.
+            button:SetAttribute("type2", "")
+        end
+    elseif button._embBankRightClickOverride then
+        button:SetAttribute("type2", button._embOriginalType2)
+        button._embOriginalType2 = nil
+        button._embBankRightClickOverride = nil
+    end
+end
+
+local function HandleEquipmentSetBankClick(setID)
+    if not setID or not IsBankOpen() then return end
+
+    local items = GetSetItems(setID)
+    for _, item in ipairs(items) do
+        if item.locationType == "bank" then
+            -- If any piece is banked, move the set's banked pieces back first.
+            EMB.WithdrawSet(setID, false)
+            return
+        end
+    end
+
+    -- Otherwise, deposit only unique pieces of the set that are in player bags.
+    EMB.DepositUniqueBagItems(setID)
+end
+
+local function RegisterActionBarButton(button)
+    if not button or not button.HookScript then return end
+    if InCombatLockdown and InCombatLockdown() then return end
+
+    if not button._embActionBarBankClickHooked then
+        button._embActionBarBankClickHooked = true
+        button:HookScript("OnClick", function(self, mouseButton, down)
+            if mouseButton ~= "RightButton" or down or not IsBankOpen() then return end
+            local setID = GetEquipmentSetIDFromActionButton(self)
+            if setID then
+                HandleEquipmentSetBankClick(setID)
+            end
+        end)
+    end
+
+    UpdateActionButtonBankMode(button)
+end
+
+local actionButtonUpdateHooks = {}
+local actionButtonMixinUpdateHooked = false
+
+local function HookActionBarButtons()
+    if ActionBarActionButtonMixin and ActionBarActionButtonMixin.UpdateAction and not actionButtonMixinUpdateHooked then
+        local ok = pcall(hooksecurefunc, ActionBarActionButtonMixin, "UpdateAction", function(button)
+            RegisterActionBarButton(button)
+        end)
+        actionButtonMixinUpdateHooked = ok
+    end
+
+    for _, functionName in ipairs({ "ActionButton_Update", "ActionButton_UpdateAction" }) do
+        if _G[functionName] and not actionButtonUpdateHooks[functionName] then
+            local ok = pcall(hooksecurefunc, functionName, function(button)
+                RegisterActionBarButton(button)
+            end)
+            actionButtonUpdateHooks[functionName] = ok
+        end
+    end
+
+    for _, prefix in ipairs(actionButtonPrefixes) do
+        for index = 1, 12 do
+            local button = _G[prefix .. index]
+            if button then
+                RegisterActionBarButton(button)
+            end
+        end
+    end
+end
+
+local bankFrameHooks = {}
+
+local function HookBankFrameVisibility()
+    for _, frameName in ipairs({ "BankFrame", "AccountBankPanel" }) do
+        local frame = _G[frameName]
+        if frame and frame.HookScript and not bankFrameHooks[frameName] then
+            bankFrameHooks[frameName] = true
+            frame:HookScript("OnShow", function()
+                isBankFrameOpen = true
+                HookActionBarButtons()
+            end)
+            frame:HookScript("OnHide", function()
+                local mainBankOpen = BankFrame and BankFrame.IsShown and BankFrame:IsShown()
+                local accountBankOpen = AccountBankPanel and AccountBankPanel.IsShown and AccountBankPanel:IsShown()
+                isBankFrameOpen = mainBankOpen or accountBankOpen or false
+                HookActionBarButtons()
+            end)
+        end
+    end
+end
+
+-------------------------------------------------------------------------------
 -- Hooking the Default Equipment Manager
 -------------------------------------------------------------------------------
 
@@ -971,19 +1182,30 @@ eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("BANKFRAME_OPENED")
 eventFrame:RegisterEvent("BANKFRAME_CLOSED")
 eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, ...)
     if event == "PLAYER_LOGIN" then
         HookEquipmentManagerPane()
+        HookBankFrameVisibility()
+        HookActionBarButtons()
     elseif event == "ADDON_LOADED" then
         if arg1 == "Blizzard_UIPanels_Game" or arg1 == "Blizzard_EquipmentManager" then
             HookEquipmentManagerPane()
         end
+        HookBankFrameVisibility()
+        HookActionBarButtons()
     elseif event == "BANKFRAME_OPENED" then
         isBankFrameOpen = true
+        HookActionBarButtons()
     elseif event == "BANKFRAME_CLOSED" then
         isBankFrameOpen = false
         CancelTransfers(EMB.Strings.TransferInterruptedBankClosed)
+        HookActionBarButtons()
+    elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "PLAYER_REGEN_ENABLED" then
+        HookBankFrameVisibility()
+        HookActionBarButtons()
     elseif event == "PLAYER_REGEN_DISABLED" then
         CancelTransfers(EMB.Strings.TransferInterruptedCombat)
     end
@@ -1017,6 +1239,7 @@ SlashCmdList["EQUIPMENTMANAGERBANK"] = function(msg)
         PrintMessage("  /eqbank deposit <SetName> - Deposit equipped items for a set")
         PrintMessage("  /eqbank withdraw <SetName> - Withdraw set items from the bank")
         PrintMessage("  Right-click an equipment set for equip and bank options.")
+        PrintMessage("  At the bank, right-click a set icon on an action bar to withdraw it or deposit unique bag items.")
     else
         -- Default: open Equipment Manager
         if PaperDollFrame_SetSidebar and CharacterFrame then
