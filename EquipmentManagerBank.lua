@@ -21,17 +21,13 @@ EMB.Strings = {
     DepositFullError = "Can't deposit %s because all bank bags are full",
     WithdrawFullError = "Can't withdraw %s because all bags are full",
     MustBeAtBank = "You must have your bank open to use bank options",
-    NoItemsToDeposit = "No equipped items in set '%s' to deposit.",
-    NoUniqueItems = "No equipped unique items in set '%s' to deposit.",
+    NoItemsToDeposit = "No items in set '%s' to deposit.",
+    NoUniqueItems = "No unique items in set '%s' to deposit.",
     NoUniqueBagItems = "No unique items in the bags for set '%s' to deposit.",
     NoItemsToWithdraw = "No items in set '%s' found in the bank.",
     NoUniqueItemsToWithdraw = "No unique items in set '%s' found in the bank.",
-    NoOtherItemsToDeposit = "No equipped items from other sets to deposit.",
-    NoOtherItemsToWithdraw = "No items for other sets found in bank to withdraw.",
     Depositing = "Depositing %d %s for '%s' to bank...",
     Withdrawing = "Withdrawing %d %s for '%s' from bank...",
-    DepositingOthers = "Depositing %d items from other sets to bank (preserving '%s')...",
-    WithdrawingOthers = "Withdrawing %d items for other sets from bank...",
     TransferInterruptedBankClosed = "Bank was closed. Item transfers stopped.",
     TransferInterruptedCombat = "Entered combat. Item transfers stopped.",
 }
@@ -290,32 +286,7 @@ local function GetSetItems(setID)
             -- 1. Check packed location if valid
             if loc and loc > 1 then
                 local isPlayer, isBank, isBags, slot, bag, bankBag = UnpackLocation(loc)
-                if isPlayer then
-                    table.insert(items, {
-                        invSlot = invSlot,
-                        itemID = itemID,
-                        locationType = "player",
-                        slot = invSlot,
-                        link = GetInventoryItemLink("player", invSlot),
-                    })
-                    found = true
-                elseif isBags and not isBank then
-                    if bag and slot then
-                        local actualID = Container.GetItemID(bag, slot)
-                        if actualID == itemID then
-                            usedBagSlots[bag .. ":" .. slot] = true
-                            table.insert(items, {
-                                invSlot = invSlot,
-                                itemID = itemID,
-                                locationType = "bag",
-                                bag = bag,
-                                slot = slot,
-                                link = Container.GetItemLink(bag, slot),
-                            })
-                            found = true
-                        end
-                    end
-                elseif isBank then
+                if isBank then
                     local targetBag = bankBag
                     if targetBag and slot then
                         local actualID = Container.GetItemID(targetBag, slot)
@@ -332,6 +303,31 @@ local function GetSetItems(setID)
                             found = true
                         end
                     end
+                elseif isBags then
+                    if bag and slot then
+                        local actualID = Container.GetItemID(bag, slot)
+                        if actualID == itemID then
+                            usedBagSlots[bag .. ":" .. slot] = true
+                            table.insert(items, {
+                                invSlot = invSlot,
+                                itemID = itemID,
+                                locationType = "bag",
+                                bag = bag,
+                                slot = slot,
+                                link = Container.GetItemLink(bag, slot),
+                            })
+                            found = true
+                        end
+                    end
+                elseif isPlayer then
+                    table.insert(items, {
+                        invSlot = invSlot,
+                        itemID = itemID,
+                        locationType = "player",
+                        slot = invSlot,
+                        link = GetInventoryItemLink("player", invSlot),
+                    })
+                    found = true
                 end
             end
 
@@ -349,9 +345,9 @@ local function GetSetItems(setID)
                 end
             end
 
-            -- 3. Fallback: Scan player bags
-            if not found then
-                for _, b in ipairs(GetPlayerBags()) do
+            -- 3. Fallback: Scan bank containers first when open
+            if not found and IsBankOpen() then
+                for _, b in ipairs(GetBankBags()) do
                     local nSlots = Container.GetNumSlots(b)
                     for s = 1, nSlots do
                         local key = b .. ":" .. s
@@ -360,7 +356,7 @@ local function GetSetItems(setID)
                             table.insert(items, {
                                 invSlot = invSlot,
                                 itemID = itemID,
-                                locationType = "bag",
+                                locationType = "bank",
                                 bag = b,
                                 slot = s,
                                 link = Container.GetItemLink(b, s),
@@ -373,9 +369,9 @@ local function GetSetItems(setID)
                 end
             end
 
-            -- 4. Fallback: Scan bank containers if open
-            if not found and IsBankOpen() then
-                for _, b in ipairs(GetBankBags()) do
+            -- 4. Fallback: Scan player bags
+            if not found then
+                for _, b in ipairs(GetPlayerBags()) do
                     local nSlots = Container.GetNumSlots(b)
                     for s = 1, nSlots do
                         local key = b .. ":" .. s
@@ -384,7 +380,7 @@ local function GetSetItems(setID)
                             table.insert(items, {
                                 invSlot = invSlot,
                                 itemID = itemID,
-                                locationType = "bank",
+                                locationType = "bag",
                                 bag = b,
                                 slot = s,
                                 link = Container.GetItemLink(b, s),
@@ -553,7 +549,23 @@ local function GetOtherSetItemIDs(setID)
     return itemIDs
 end
 
--- Deposit equipped items for this set. Items stored in player bags are deliberately ignored.
+-- Returns the union of item IDs used by every equipment set.
+local function GetAllSetItemIDs()
+    local itemIDs = {}
+    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetItemIDs) then
+        return itemIDs
+    end
+
+    for _, setID in ipairs(C_EquipmentSet.GetEquipmentSetIDs() or {}) do
+        local setItems = GetSetItemIDSet(setID)
+        for itemID in pairs(setItems) do
+            itemIDs[itemID] = true
+        end
+    end
+    return itemIDs
+end
+
+-- Deposit this set's items from equipped slots and player bags.
 function EMB.DepositSet(setID, uniqueOnly)
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
@@ -566,16 +578,29 @@ function EMB.DepositSet(setID, uniqueOnly)
 
     local toDeposit = {}
     for _, item in ipairs(items) do
-        local isStillEquipped = item.locationType == "player"
-            and GetInventoryItemID("player", item.slot) == item.itemID
         local isUnique = not otherSetItemIDs[item.itemID]
-        if isStillEquipped and (not uniqueOnly or isUnique) then
-            table.insert(toDeposit, {
-                actionType = "EQUIP_TO_BANK",
-                invSlot = item.slot,
-                itemID = item.itemID,
-                itemLink = item.link,
-            })
+        if not uniqueOnly or isUnique then
+            if item.locationType == "player"
+                and GetInventoryItemID("player", item.slot) == item.itemID then
+                table.insert(toDeposit, {
+                    actionType = "EQUIP_TO_BANK",
+                    invSlot = item.slot,
+                    itemID = item.itemID,
+                    itemLink = item.link,
+                })
+            elseif item.locationType == "bag"
+                and Container.GetItemID(item.bag, item.slot) == item.itemID then
+                local info = Container.GetItemInfo(item.bag, item.slot)
+                if not (info and info.isLocked) then
+                    table.insert(toDeposit, {
+                        actionType = "BAG_TO_BANK",
+                        fromBag = item.bag,
+                        fromSlot = item.slot,
+                        itemID = item.itemID,
+                        itemLink = item.link,
+                    })
+                end
+            end
         end
     end
 
@@ -609,8 +634,7 @@ function EMB.DepositSet(setID, uniqueOnly)
     StartTransfers(actions, string.format(EMB.Strings.Depositing, #actions, desc, setName))
 end
 
--- Action-bar smart banking uses bagged items only, leaving the equipment-manager
--- Deposit options' equipped-only behavior unchanged.
+-- Action-bar smart banking deposits unique bagged items when the set has no banked pieces.
 function EMB.DepositUniqueBagItems(setID)
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
@@ -715,26 +739,20 @@ function EMB.WithdrawSet(setID, uniqueOnly)
     StartTransfers(actions, string.format(EMB.Strings.Withdrawing, #actions, desc, setName))
 end
 
--- 4: Deposit other sets to bank
-function EMB.DepositOtherSets(currentSetID)
+-- Deposit every equipped or bagged copy of items referenced by any equipment set.
+function EMB.DepositAllSets()
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
         return
     end
 
-    local currentSetName = (C_EquipmentSet.GetEquipmentSetInfo and C_EquipmentSet.GetEquipmentSetInfo(currentSetID)) or "Current Set"
-
-    -- Keep this set's items; only move equipped items belonging to other sets.
-    local currentSetItemIDs = GetSetItemIDSet(currentSetID)
-    local otherSetItemIDs = GetOtherSetItemIDs(currentSetID)
-    for itemID in pairs(currentSetItemIDs) do
-        otherSetItemIDs[itemID] = nil
-    end
-
+    local setName = "all equipment sets"
+    local setItemIDs = GetAllSetItemIDs()
     local toDeposit = {}
+
     for invSlot = 1, 19 do
         local itemID = GetInventoryItemID("player", invSlot)
-        if itemID and otherSetItemIDs[itemID] then
+        if itemID and setItemIDs[itemID] then
             table.insert(toDeposit, {
                 actionType = "EQUIP_TO_BANK",
                 invSlot = invSlot,
@@ -744,8 +762,27 @@ function EMB.DepositOtherSets(currentSetID)
         end
     end
 
+    for _, bagID in ipairs(GetPlayerBags()) do
+        local numSlots = Container.GetNumSlots(bagID)
+        for slot = 1, numSlots do
+            local itemID = Container.GetItemID(bagID, slot)
+            if itemID and setItemIDs[itemID] then
+                local info = Container.GetItemInfo(bagID, slot)
+                if not (info and info.isLocked) then
+                    table.insert(toDeposit, {
+                        actionType = "BAG_TO_BANK",
+                        fromBag = bagID,
+                        fromSlot = slot,
+                        itemID = itemID,
+                        itemLink = Container.GetItemLink(bagID, slot),
+                    })
+                end
+            end
+        end
+    end
+
     if #toDeposit == 0 then
-        PrintMessage(EMB.Strings.NoOtherItemsToDeposit)
+        PrintMessage(string.format(EMB.Strings.NoItemsToDeposit, setName))
         return
     end
 
@@ -766,29 +803,25 @@ function EMB.DepositOtherSets(currentSetID)
         table.insert(actions, item)
     end
 
-    StartTransfers(actions, string.format(EMB.Strings.DepositingOthers, #actions, currentSetName))
+    StartTransfers(actions, string.format(EMB.Strings.Depositing, #actions, "items", setName))
 end
 
--- 5: Withdraw other sets from bank
-function EMB.WithdrawOtherSets(currentSetID)
+-- Withdraw every bank copy matching an item referenced by any equipment set.
+function EMB.WithdrawAllSets()
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
         return
     end
 
-    local currentSetItemIDs = GetSetItemIDSet(currentSetID)
-    local otherSetItemIDs = GetOtherSetItemIDs(currentSetID)
-    for itemID in pairs(currentSetItemIDs) do
-        otherSetItemIDs[itemID] = nil
-    end
-
-    -- Scan bank containers for these items
+    local setName = "all equipment sets"
+    local setItemIDs = GetAllSetItemIDs()
     local toWithdraw = {}
+
     for _, bagID in ipairs(GetBankBags()) do
         local numSlots = Container.GetNumSlots(bagID)
         for slot = 1, numSlots do
             local itemID = Container.GetItemID(bagID, slot)
-            if itemID and otherSetItemIDs[itemID] then
+            if itemID and setItemIDs[itemID] then
                 local info = Container.GetItemInfo(bagID, slot)
                 if not (info and info.isLocked) then
                     table.insert(toWithdraw, {
@@ -804,7 +837,7 @@ function EMB.WithdrawOtherSets(currentSetID)
     end
 
     if #toWithdraw == 0 then
-        PrintMessage(EMB.Strings.NoOtherItemsToWithdraw)
+        PrintMessage(string.format(EMB.Strings.NoItemsToWithdraw, setName))
         return
     end
 
@@ -825,7 +858,7 @@ function EMB.WithdrawOtherSets(currentSetID)
         table.insert(actions, item)
     end
 
-    StartTransfers(actions, string.format(EMB.Strings.WithdrawingOthers, #actions))
+    StartTransfers(actions, string.format(EMB.Strings.Withdrawing, #actions, "items", setName))
 end
 
 -------------------------------------------------------------------------------
@@ -870,10 +903,10 @@ local function OpenContextMenu(anchorButton, setID)
                 EMB.WithdrawSet(setID, true)
             end)
             AddBankOption(EMB.Strings.DepositAll, function()
-                EMB.DepositOtherSets(setID)
+                EMB.DepositAllSets()
             end)
             AddBankOption(EMB.Strings.WithdrawAll, function()
-                EMB.WithdrawOtherSets(setID)
+                EMB.WithdrawAllSets()
             end)
         end)
         return
@@ -923,13 +956,13 @@ local function OpenContextMenu(anchorButton, setID)
             text = EMB.Strings.DepositAll,
             notCheckable = true,
             disabled = not bankOpen,
-            func = function() EMB.DepositOtherSets(setID) end
+            func = function() EMB.DepositAllSets() end
         },
         {
             text = EMB.Strings.WithdrawAll,
             notCheckable = true,
             disabled = not bankOpen,
-            func = function() EMB.WithdrawOtherSets(setID) end
+            func = function() EMB.WithdrawAllSets() end
         },
     }
 
@@ -1236,7 +1269,7 @@ SlashCmdList["EQUIPMENTMANAGERBANK"] = function(msg)
     elseif cmd == "help" then
         PrintMessage("Commands:")
         PrintMessage("  /eqbank - Toggle Character Frame Equipment Manager")
-        PrintMessage("  /eqbank deposit <SetName> - Deposit equipped items for a set")
+        PrintMessage("  /eqbank deposit <SetName> - Deposit items for a set into the bank")
         PrintMessage("  /eqbank withdraw <SetName> - Withdraw set items from the bank")
         PrintMessage("  Right-click an equipment set for equip and bank options.")
         PrintMessage("  At the bank, right-click a set icon on an action bar to withdraw it or deposit unique bag items.")
