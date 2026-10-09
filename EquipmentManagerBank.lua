@@ -1347,22 +1347,25 @@ local function UpdateActionButtonEquippedCheck(button)
 
     if not button._embEquippedSetCheck then
         if not button.CreateTexture then return end
-        local check = button:CreateTexture(nil, "OVERLAY")
-        check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
-        check:SetDrawLayer("OVERLAY", 7)
-        check:SetSize(16, 16)
-        local icon = button.icon or button.Icon
-        if icon then
-            check:SetPoint("TOPRIGHT", icon, "TOPRIGHT", -1, -1)
-        else
-            check:SetPoint("TOPRIGHT", button, "TOPRIGHT", -3, -3)
-        end
-        check:Hide()
-        button._embEquippedSetCheck = check
+        button._embEquippedSetCheck = button:CreateTexture(nil, "OVERLAY")
+        button._embEquippedSetCheck:Hide()
     end
 
-    local _, _, _, isEquipped = C_EquipmentSet.GetEquipmentSetInfo(setID)
-    button._embEquippedSetCheck:SetShown(isEquipped and true or false)
+    local check = button._embEquippedSetCheck
+    check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    check:SetDrawLayer("OVERLAY", 7)
+    check:SetSize(24, 24)
+    check:ClearAllPoints()
+    local icon = button.icon or button.Icon
+    check:SetPoint("CENTER", icon or button, "CENTER", 0, 0)
+
+    local _, _, _, isEquipped, numItems, numEquipped = C_EquipmentSet.GetEquipmentSetInfo(setID)
+    -- Treat up to four changed pieces as a close enough set match for the indicator.
+    local matchesWithTolerance = type(numItems) == "number"
+        and type(numEquipped) == "number"
+        and numItems > 0
+        and (numItems - numEquipped) <= 4
+    check:SetShown((isEquipped and true) or (matchesWithTolerance and true) or false)
 end
 
 local function UpdateActionButtonBankMode(button)
