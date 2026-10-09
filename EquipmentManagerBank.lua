@@ -26,8 +26,11 @@ EMB.Strings = {
     NoUniqueBagItems = "No unique items in the bags for set '%s' to deposit.",
     NoItemsToWithdraw = "No items in set '%s' found in the bank.",
     NoUniqueItemsToWithdraw = "No unique items in set '%s' found in the bank.",
+    NoOtherSetItems = "No items for other sets found in the bank or your bags.",
     Depositing = "Depositing %d %s for '%s' to bank...",
     Withdrawing = "Withdrawing %d %s for '%s' from bank...",
+    DepositingOtherSets = "Depositing %d items for other sets to bank...",
+    WithdrawingOtherSets = "Withdrawing %d items for other sets from bank...",
     TransferInterruptedBankClosed = "Bank was closed. Item transfers stopped.",
     TransferInterruptedCombat = "Entered combat. Item transfers stopped.",
 }
@@ -549,6 +552,16 @@ local function GetOtherSetItemIDs(setID)
     return itemIDs
 end
 
+-- Returns IDs used by other sets but not by the set whose icon was clicked.
+local function GetOtherSetOnlyItemIDs(setID)
+    local itemIDs = GetOtherSetItemIDs(setID)
+    local currentSetItemIDs = GetSetItemIDSet(setID)
+    for itemID in pairs(currentSetItemIDs) do
+        itemIDs[itemID] = nil
+    end
+    return itemIDs
+end
+
 -- Returns the union of item IDs used by every equipment set.
 local function GetAllSetItemIDs()
     local itemIDs = {}
@@ -861,6 +874,100 @@ function EMB.WithdrawAllSets()
     StartTransfers(actions, string.format(EMB.Strings.Withdrawing, #actions, "items", setName))
 end
 
+-- Ctrl+Shift-right-click uses the selected set as the one to preserve. If other
+-- set items are in the bank, withdraw them; otherwise deposit matching bag items.
+function EMB.TransferOtherSetItems(setID)
+    if not IsBankOpen() then
+        PrintMessage(EMB.Strings.MustBeAtBank)
+        return
+    end
+
+    local otherSetItemIDs = GetOtherSetOnlyItemIDs(setID)
+    local toWithdraw = {}
+    for _, bagID in ipairs(GetBankBags()) do
+        local numSlots = Container.GetNumSlots(bagID)
+        for slot = 1, numSlots do
+            local itemID = Container.GetItemID(bagID, slot)
+            if itemID and otherSetItemIDs[itemID] then
+                local info = Container.GetItemInfo(bagID, slot)
+                if not (info and info.isLocked) then
+                    table.insert(toWithdraw, {
+                        actionType = "BANK_TO_BAG",
+                        fromBag = bagID,
+                        fromSlot = slot,
+                        itemID = itemID,
+                        itemLink = Container.GetItemLink(bagID, slot),
+                    })
+                end
+            end
+        end
+    end
+
+    if #toWithdraw > 0 then
+        local emptyPlayerSlots = GetEmptyPlayerBagSlots()
+        if #emptyPlayerSlots < #toWithdraw then
+            PrintMessage(string.format("Can't withdraw all items: only %d bag slots free, %d needed.", #emptyPlayerSlots, #toWithdraw))
+            while #toWithdraw > #emptyPlayerSlots do
+                table.remove(toWithdraw)
+            end
+            if #toWithdraw == 0 then return end
+        end
+
+        local actions = {}
+        for i, item in ipairs(toWithdraw) do
+            local targetSlot = emptyPlayerSlots[i]
+            item.toBag = targetSlot.bag
+            item.toSlot = targetSlot.slot
+            table.insert(actions, item)
+        end
+        StartTransfers(actions, string.format(EMB.Strings.WithdrawingOtherSets, #actions))
+        return
+    end
+
+    local toDeposit = {}
+    for _, bagID in ipairs(GetPlayerBags()) do
+        local numSlots = Container.GetNumSlots(bagID)
+        for slot = 1, numSlots do
+            local itemID = Container.GetItemID(bagID, slot)
+            if itemID and otherSetItemIDs[itemID] then
+                local info = Container.GetItemInfo(bagID, slot)
+                if not (info and info.isLocked) then
+                    table.insert(toDeposit, {
+                        actionType = "BAG_TO_BANK",
+                        fromBag = bagID,
+                        fromSlot = slot,
+                        itemID = itemID,
+                        itemLink = Container.GetItemLink(bagID, slot),
+                    })
+                end
+            end
+        end
+    end
+
+    if #toDeposit == 0 then
+        PrintMessage(EMB.Strings.NoOtherSetItems)
+        return
+    end
+
+    local emptyBankSlots = GetEmptyBankSlots()
+    if #emptyBankSlots < #toDeposit then
+        PrintMessage(string.format("Can't deposit all items: only %d bank slots free, %d needed.", #emptyBankSlots, #toDeposit))
+        while #toDeposit > #emptyBankSlots do
+            table.remove(toDeposit)
+        end
+        if #toDeposit == 0 then return end
+    end
+
+    local actions = {}
+    for i, item in ipairs(toDeposit) do
+        local targetSlot = emptyBankSlots[i]
+        item.toBag = targetSlot.bag
+        item.toSlot = targetSlot.slot
+        table.insert(actions, item)
+    end
+    StartTransfers(actions, string.format(EMB.Strings.DepositingOtherSets, #actions))
+end
+
 -------------------------------------------------------------------------------
 -- Context Menu Generation
 -------------------------------------------------------------------------------
@@ -1040,8 +1147,13 @@ local function UpdateActionButtonBankMode(button)
     end
 end
 
-local function HandleEquipmentSetBankClick(setID)
+local function HandleEquipmentSetBankClick(setID, otherSets)
     if not setID or not IsBankOpen() then return end
+
+    if otherSets then
+        EMB.TransferOtherSetItems(setID)
+        return
+    end
 
     local items = GetSetItems(setID)
     for _, item in ipairs(items) do
@@ -1066,7 +1178,9 @@ local function RegisterActionBarButton(button)
             if mouseButton ~= "RightButton" or down or not IsBankOpen() then return end
             local setID = GetEquipmentSetIDFromActionButton(self)
             if setID then
-                HandleEquipmentSetBankClick(setID)
+                local ctrlShift = IsControlKeyDown and IsControlKeyDown()
+                    and IsShiftKeyDown and IsShiftKeyDown()
+                HandleEquipmentSetBankClick(setID, ctrlShift)
             end
         end)
     end
@@ -1272,7 +1386,8 @@ SlashCmdList["EQUIPMENTMANAGERBANK"] = function(msg)
         PrintMessage("  /eqbank deposit <SetName> - Deposit items for a set into the bank")
         PrintMessage("  /eqbank withdraw <SetName> - Withdraw set items from the bank")
         PrintMessage("  Right-click an equipment set for equip and bank options.")
-        PrintMessage("  At the bank, right-click a set icon on an action bar to withdraw it or deposit unique bag items.")
+        PrintMessage("  At the bank, right-click a set icon to withdraw it or deposit unique bag items.")
+        PrintMessage("  Ctrl+Shift-right-click a set icon to transfer other-set items.")
     else
         -- Default: open Equipment Manager
         if PaperDollFrame_SetSidebar and CharacterFrame then
