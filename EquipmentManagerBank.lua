@@ -1181,17 +1181,31 @@ local function AppendSetTooltipHelp(button, lines)
     end
 end
 
+local function NormalizeActionInfo(actionType, actionID)
+    if type(actionType) == "table" then
+        local actionInfo = actionType
+        actionID = actionInfo.actionID or actionInfo.id or actionID
+        actionType = actionInfo.actionType or actionInfo.type
+    end
+    if type(actionType) == "string" then
+        actionType = string.lower(actionType)
+    end
+    return actionType, actionID
+end
+
 local function GetActionInfoForSlot(actionSlot)
     local actionType, actionID
     if GetActionInfo then
         actionType, actionID = GetActionInfo(actionSlot)
+        actionType, actionID = NormalizeActionInfo(actionType, actionID)
     end
-    if not actionType and C_ActionBar and C_ActionBar.GetActionInfo then
-        actionType, actionID = C_ActionBar.GetActionInfo(actionSlot)
-    end
-    if type(actionType) == "table" then
-        actionID = actionType.actionID or actionType.id or actionID
-        actionType = actionType.actionType or actionType.type
+    if (not actionType or actionID == nil) and C_ActionBar and C_ActionBar.GetActionInfo then
+        local apiActionType, apiActionID = C_ActionBar.GetActionInfo(actionSlot)
+        apiActionType, apiActionID = NormalizeActionInfo(apiActionType, apiActionID)
+        actionType = actionType or apiActionType
+        if actionID == nil then
+            actionID = apiActionID
+        end
     end
     return actionType, actionID
 end
@@ -1201,29 +1215,75 @@ local function GetActionSlotForButton(button)
     if not actionSlot and button.GetAttribute then
         actionSlot = button:GetAttribute("action")
     end
+    if not actionSlot and button.CalculateAction then
+        actionSlot = button:CalculateAction()
+    end
     if not actionSlot and ActionButton_GetPagedID then
         actionSlot = ActionButton_GetPagedID(button)
     end
     return actionSlot
 end
 
+local function ResolveEquipmentSetID(actionID)
+    if actionID == nil or not C_EquipmentSet then return nil end
+
+    if type(actionID) == "string" then
+        if C_EquipmentSet.GetEquipmentSetID then
+            local setID = C_EquipmentSet.GetEquipmentSetID(actionID)
+            if setID then return setID end
+        end
+        actionID = tonumber(actionID)
+    end
+
+    if type(actionID) ~= "number" then return nil end
+
+    local setIDs = C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetEquipmentSetIDs()
+    if setIDs then
+        for _, setID in ipairs(setIDs) do
+            if setID == actionID then
+                return setID
+            end
+        end
+    end
+
+    if C_EquipmentSet.GetEquipmentSetInfo then
+        local ok, _, _, setID = pcall(C_EquipmentSet.GetEquipmentSetInfo, actionID)
+        if ok and setID then return setID end
+    end
+
+    -- Some clients expose the equipment-set action ID as a zero-based set index.
+    if setIDs and actionID >= 0 and actionID % 1 == 0 then
+        return setIDs[actionID + 1] or setIDs[actionID]
+    end
+    return nil
+end
+
 local function IsEquipmentSetActionButton(button)
     local actionSlot = GetActionSlotForButton(button)
-    if not actionSlot then return false end
-    local actionType = GetActionInfoForSlot(actionSlot)
-    return actionType == "equipmentset"
+    if actionSlot then
+        local actionType = GetActionInfoForSlot(actionSlot)
+        if actionType == "equipmentset" then return true end
+    end
+
+    if button and button.GetAttribute then
+        return button:GetAttribute("type") == "equipmentset"
+    end
+    return false
 end
 
 local function GetEquipmentSetIDFromActionButton(button)
     local actionSlot = GetActionSlotForButton(button)
-    if not actionSlot then return nil end
-
-    local actionType, actionID = GetActionInfoForSlot(actionSlot)
-    if actionType ~= "equipmentset" then return nil end
-    if type(actionID) == "string" and C_EquipmentSet and C_EquipmentSet.GetEquipmentSetID then
-        actionID = C_EquipmentSet.GetEquipmentSetID(actionID)
+    if actionSlot then
+        local actionType, actionID = GetActionInfoForSlot(actionSlot)
+        if actionType == "equipmentset" then
+            return ResolveEquipmentSetID(actionID)
+        end
     end
-    return actionID
+
+    if button and button.GetAttribute and button:GetAttribute("type") == "equipmentset" then
+        return ResolveEquipmentSetID(button:GetAttribute("equipmentset"))
+    end
+    return nil
 end
 
 local tooltipMethodHooks = {
@@ -1289,10 +1349,11 @@ local function UpdateActionButtonEquippedCheck(button)
         if not button.CreateTexture then return end
         local check = button:CreateTexture(nil, "OVERLAY")
         check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+        check:SetDrawLayer("OVERLAY", 7)
         check:SetSize(16, 16)
         local icon = button.icon or button.Icon
         if icon then
-            check:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 0, 0)
+            check:SetPoint("TOPRIGHT", icon, "TOPRIGHT", -1, -1)
         else
             check:SetPoint("TOPRIGHT", button, "TOPRIGHT", -3, -3)
         end
@@ -1381,16 +1442,20 @@ local function RegisterActionBarButton(button)
 end
 
 local actionButtonUpdateHooks = {}
-local actionButtonMixinUpdateHooked = false
+local actionButtonMixinUpdateHooks = {}
 
 local function HookActionBarButtons()
     HookTooltipRefreshers()
 
-    if ActionBarActionButtonMixin and ActionBarActionButtonMixin.UpdateAction and not actionButtonMixinUpdateHooked then
-        local ok = pcall(hooksecurefunc, ActionBarActionButtonMixin, "UpdateAction", function(button)
-            RegisterActionBarButton(button)
-        end)
-        actionButtonMixinUpdateHooked = ok
+    if ActionBarActionButtonMixin then
+        for _, methodName in ipairs({ "UpdateAction", "Update" }) do
+            if ActionBarActionButtonMixin[methodName] and not actionButtonMixinUpdateHooks[methodName] then
+                local ok = pcall(hooksecurefunc, ActionBarActionButtonMixin, methodName, function(button)
+                    RegisterActionBarButton(button)
+                end)
+                actionButtonMixinUpdateHooks[methodName] = ok
+            end
+        end
     end
 
     for _, functionName in ipairs({ "ActionButton_Update", "ActionButton_UpdateAction" }) do
@@ -1400,6 +1465,10 @@ local function HookActionBarButtons()
             end)
             actionButtonUpdateHooks[functionName] = ok
         end
+    end
+
+    if ActionBarButtonEventsFrame and ActionBarButtonEventsFrame.ForEachFrame then
+        pcall(ActionBarButtonEventsFrame.ForEachFrame, ActionBarButtonEventsFrame, RegisterActionBarButton)
     end
 
     for _, prefix in ipairs(actionButtonPrefixes) do
@@ -1537,6 +1606,7 @@ eventFrame:RegisterEvent("BANKFRAME_CLOSED")
 eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 for _, eventName in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "EQUIPMENT_SWAP_FINISHED", "EQUIPMENT_SETS_CHANGED" }) do
     pcall(eventFrame.RegisterEvent, eventFrame, eventName)
 end
@@ -1559,7 +1629,7 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, ...)
         isBankFrameOpen = false
         CancelTransfers(EMB.Strings.TransferInterruptedBankClosed)
         HookActionBarButtons()
-    elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "PLAYER_REGEN_ENABLED" then
+    elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_ENTERING_WORLD" then
         HookBankFrameVisibility()
         HookActionBarButtons()
     elseif event == "PLAYER_EQUIPMENT_CHANGED" or event == "EQUIPMENT_SWAP_FINISHED" or event == "EQUIPMENT_SETS_CHANGED" then
