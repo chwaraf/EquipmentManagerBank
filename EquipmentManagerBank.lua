@@ -11,25 +11,24 @@ EMB.Version = "1.0.0"
 
 -- Outfitter-style string definitions
 EMB.Strings = {
-    Bank = "Bank",
-    DepositAll = "Deposit all items to bank",
-    DepositUnique = "Deposit unique items to bank",
-    WithdrawAll = "Withdraw items from bank",
-    DepositOthers = "Deposit other sets to bank",
-    WithdrawOthers = "Withdraw other sets from bank",
-    EquipSet = "Equip Set",
-    QuickBank = "Bank Options",
-    BankClosed = "Requires Bank to be open",
+    EquipSet = "Equip",
+    Deposit = "Deposit",
+    Withdraw = "Withdraw",
+    DepositUnique = "Deposit Unique",
+    WithdrawUnique = "Withdraw Unique",
+    DepositAll = "Deposit All",
+    WithdrawAll = "Withdraw All",
     DepositFullError = "Can't deposit %s because all bank bags are full",
     WithdrawFullError = "Can't withdraw %s because all bags are full",
     MustBeAtBank = "You must have your bank open to use bank options",
-    NoItemsToDeposit = "No items in set '%s' to deposit (already in bank or missing).",
-    NoUniqueItems = "No unique items in set '%s' to deposit (shared by other sets).",
-    AllItemsInBags = "All items for set '%s' are already in your inventory or equipped.",
-    NoOtherItemsToDeposit = "No items from other sets found in bags to deposit.",
+    NoItemsToDeposit = "No equipped items in set '%s' to deposit.",
+    NoUniqueItems = "No equipped unique items in set '%s' to deposit.",
+    NoItemsToWithdraw = "No items in set '%s' found in the bank.",
+    NoUniqueItemsToWithdraw = "No unique items in set '%s' found in the bank.",
+    NoOtherItemsToDeposit = "No equipped items from other sets to deposit.",
     NoOtherItemsToWithdraw = "No items for other sets found in bank to withdraw.",
     Depositing = "Depositing %d %s for '%s' to bank...",
-    Withdrawing = "Withdrawing %d items for '%s' from bank...",
+    Withdrawing = "Withdrawing %d %s for '%s' from bank...",
     DepositingOthers = "Depositing %d items from other sets to bank (preserving '%s')...",
     WithdrawingOthers = "Withdrawing %d items for other sets from bank...",
     TransferInterruptedBankClosed = "Bank was closed. Item transfers stopped.",
@@ -514,7 +513,46 @@ end
 -- Bank Operations (Outfitter parity)
 -------------------------------------------------------------------------------
 
--- 1 & 2: Deposit set to bank (all items or unique items only)
+-- Returns item IDs used by a set, keyed by ID for quick membership checks.
+local function GetSetItemIDSet(setID)
+    local itemIDs = {}
+    if C_EquipmentSet and C_EquipmentSet.GetItemIDs then
+        local setItems = C_EquipmentSet.GetItemIDs(setID)
+        if setItems then
+            for _, itemID in pairs(setItems) do
+                if itemID and itemID > 1 then
+                    itemIDs[itemID] = true
+                end
+            end
+        end
+    end
+    return itemIDs
+end
+
+-- Returns item IDs used by any equipment set other than setID.
+local function GetOtherSetItemIDs(setID)
+    local itemIDs = {}
+    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetIDs and C_EquipmentSet.GetItemIDs) then
+        return itemIDs
+    end
+
+    local setIDs = C_EquipmentSet.GetEquipmentSetIDs() or {}
+    for _, otherID in ipairs(setIDs) do
+        if otherID ~= setID then
+            local otherItems = C_EquipmentSet.GetItemIDs(otherID)
+            if otherItems then
+                for _, itemID in pairs(otherItems) do
+                    if itemID and itemID > 1 then
+                        itemIDs[itemID] = true
+                    end
+                end
+            end
+        end
+    end
+    return itemIDs
+end
+
+-- Deposit equipped items for this set. Items stored in player bags are deliberately ignored.
 function EMB.DepositSet(setID, uniqueOnly)
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
@@ -523,45 +561,20 @@ function EMB.DepositSet(setID, uniqueOnly)
 
     local setName = (C_EquipmentSet.GetEquipmentSetInfo and C_EquipmentSet.GetEquipmentSetInfo(setID)) or "Set"
     local items = GetSetItems(setID)
-
-    local otherSetItemIDs = {}
-    if uniqueOnly then
-        local allSetIDs = C_EquipmentSet.GetEquipmentSetIDs()
-        for _, otherID in ipairs(allSetIDs) do
-            if otherID ~= setID then
-                local oItems = C_EquipmentSet.GetItemIDs(otherID)
-                if oItems then
-                    for _, id in pairs(oItems) do
-                        if id and id > 1 then
-                            otherSetItemIDs[id] = true
-                        end
-                    end
-                end
-            end
-        end
-    end
+    local otherSetItemIDs = uniqueOnly and GetOtherSetItemIDs(setID) or {}
 
     local toDeposit = {}
     for _, item in ipairs(items) do
-        if uniqueOnly and otherSetItemIDs[item.itemID] then
-            -- Skip items used in other sets
-        else
-            if item.locationType == "bag" then
-                table.insert(toDeposit, {
-                    actionType = "BAG_TO_BANK",
-                    fromBag = item.bag,
-                    fromSlot = item.slot,
-                    itemID = item.itemID,
-                    itemLink = item.link,
-                })
-            elseif item.locationType == "player" then
-                table.insert(toDeposit, {
-                    actionType = "EQUIP_TO_BANK",
-                    invSlot = item.slot,
-                    itemID = item.itemID,
-                    itemLink = item.link,
-                })
-            end
+        local isStillEquipped = item.locationType == "player"
+            and GetInventoryItemID("player", item.slot) == item.itemID
+        local isUnique = not otherSetItemIDs[item.itemID]
+        if isStillEquipped and (not uniqueOnly or isUnique) then
+            table.insert(toDeposit, {
+                actionType = "EQUIP_TO_BANK",
+                invSlot = item.slot,
+                itemID = item.itemID,
+                itemLink = item.link,
+            })
         end
     end
 
@@ -595,8 +608,8 @@ function EMB.DepositSet(setID, uniqueOnly)
     StartTransfers(actions, string.format(EMB.Strings.Depositing, #actions, desc, setName))
 end
 
--- 3: Withdraw items for set from bank
-function EMB.WithdrawSet(setID)
+-- Withdraw items for this set from the bank. With uniqueOnly, leave shared items alone.
+function EMB.WithdrawSet(setID, uniqueOnly)
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
         return
@@ -604,10 +617,11 @@ function EMB.WithdrawSet(setID)
 
     local setName = (C_EquipmentSet.GetEquipmentSetInfo and C_EquipmentSet.GetEquipmentSetInfo(setID)) or "Set"
     local items = GetSetItems(setID)
+    local otherSetItemIDs = uniqueOnly and GetOtherSetItemIDs(setID) or {}
 
     local toWithdraw = {}
     for _, item in ipairs(items) do
-        if item.locationType == "bank" then
+        if item.locationType == "bank" and (not uniqueOnly or not otherSetItemIDs[item.itemID]) then
             table.insert(toWithdraw, {
                 actionType = "BANK_TO_BAG",
                 fromBag = item.bag,
@@ -619,7 +633,8 @@ function EMB.WithdrawSet(setID)
     end
 
     if #toWithdraw == 0 then
-        PrintMessage(string.format(EMB.Strings.AllItemsInBags, setName))
+        local message = uniqueOnly and EMB.Strings.NoUniqueItemsToWithdraw or EMB.Strings.NoItemsToWithdraw
+        PrintMessage(string.format(message, setName))
         return
     end
 
@@ -640,7 +655,8 @@ function EMB.WithdrawSet(setID)
         table.insert(actions, item)
     end
 
-    StartTransfers(actions, string.format(EMB.Strings.Withdrawing, #actions, setName))
+    local desc = uniqueOnly and "unique items" or "items"
+    StartTransfers(actions, string.format(EMB.Strings.Withdrawing, #actions, desc, setName))
 end
 
 -- 4: Deposit other sets to bank
@@ -652,51 +668,23 @@ function EMB.DepositOtherSets(currentSetID)
 
     local currentSetName = (C_EquipmentSet.GetEquipmentSetInfo and C_EquipmentSet.GetEquipmentSetInfo(currentSetID)) or "Current Set"
 
-    -- Collect all item IDs used by current set to protect them
-    local currentSetItemIDs = {}
-    local currentItems = C_EquipmentSet.GetItemIDs(currentSetID)
-    if currentItems then
-        for _, id in pairs(currentItems) do
-            if id and id > 1 then
-                currentSetItemIDs[id] = true
-            end
-        end
+    -- Keep this set's items; only move equipped items belonging to other sets.
+    local currentSetItemIDs = GetSetItemIDSet(currentSetID)
+    local otherSetItemIDs = GetOtherSetItemIDs(currentSetID)
+    for itemID in pairs(currentSetItemIDs) do
+        otherSetItemIDs[itemID] = nil
     end
 
-    -- Collect item IDs belonging to any other set
-    local otherSetItemIDs = {}
-    local allSetIDs = C_EquipmentSet.GetEquipmentSetIDs()
-    for _, sID in ipairs(allSetIDs) do
-        if sID ~= currentSetID then
-            local items = C_EquipmentSet.GetItemIDs(sID)
-            if items then
-                for _, id in pairs(items) do
-                    if id and id > 1 and not currentSetItemIDs[id] then
-                        otherSetItemIDs[id] = true
-                    end
-                end
-            end
-        end
-    end
-
-    -- Scan player bags for these items
     local toDeposit = {}
-    for _, bagID in ipairs(GetPlayerBags()) do
-        local numSlots = Container.GetNumSlots(bagID)
-        for slot = 1, numSlots do
-            local itemID = Container.GetItemID(bagID, slot)
-            if itemID and otherSetItemIDs[itemID] then
-                local info = Container.GetItemInfo(bagID, slot)
-                if not (info and info.isLocked) then
-                    table.insert(toDeposit, {
-                        actionType = "BAG_TO_BANK",
-                        fromBag = bagID,
-                        fromSlot = slot,
-                        itemID = itemID,
-                        itemLink = Container.GetItemLink(bagID, slot),
-                    })
-                end
-            end
+    for invSlot = 1, 19 do
+        local itemID = GetInventoryItemID("player", invSlot)
+        if itemID and otherSetItemIDs[itemID] then
+            table.insert(toDeposit, {
+                actionType = "EQUIP_TO_BANK",
+                invSlot = invSlot,
+                itemID = itemID,
+                itemLink = GetInventoryItemLink("player", invSlot),
+            })
         end
     end
 
@@ -732,29 +720,10 @@ function EMB.WithdrawOtherSets(currentSetID)
         return
     end
 
-    local currentSetItemIDs = {}
-    local currentItems = C_EquipmentSet.GetItemIDs(currentSetID)
-    if currentItems then
-        for _, id in pairs(currentItems) do
-            if id and id > 1 then
-                currentSetItemIDs[id] = true
-            end
-        end
-    end
-
-    local otherSetItemIDs = {}
-    local allSetIDs = C_EquipmentSet.GetEquipmentSetIDs()
-    for _, sID in ipairs(allSetIDs) do
-        if sID ~= currentSetID then
-            local items = C_EquipmentSet.GetItemIDs(sID)
-            if items then
-                for _, id in pairs(items) do
-                    if id and id > 1 and not currentSetItemIDs[id] then
-                        otherSetItemIDs[id] = true
-                    end
-                end
-            end
-        end
+    local currentSetItemIDs = GetSetItemIDSet(currentSetID)
+    local otherSetItemIDs = GetOtherSetItemIDs(currentSetID)
+    for itemID in pairs(currentSetItemIDs) do
+        otherSetItemIDs[itemID] = nil
     end
 
     -- Scan bank containers for these items
@@ -825,57 +794,31 @@ local function OpenContextMenu(anchorButton, setID)
                 end
             end)
 
-            rootDescription:CreateDivider()
-
-            -- Outfitter-style "Bank" Submenu
-            local bankSubmenu = rootDescription:CreateButton(EMB.Strings.Bank)
-            if not bankOpen then
-                bankSubmenu:SetEnabled(false)
-                bankSubmenu:SetTooltip(function(tooltip)
-                    GameTooltip_SetDefaultAnchor(tooltip, UIParent)
-                    tooltip:SetText(EMB.Strings.BankClosed, 1, 0.2, 0.2)
-                end)
+            local function AddBankOption(label, callback)
+                local button = rootDescription:CreateButton(label, callback)
+                if not bankOpen then
+                    button:SetEnabled(false)
+                end
             end
 
-            bankSubmenu:CreateTitle(EMB.Strings.QuickBank)
-
-            local btnDepAll = bankSubmenu:CreateButton(EMB.Strings.DepositAll, function()
+            AddBankOption(EMB.Strings.Deposit, function()
                 EMB.DepositSet(setID, false)
             end)
-            if not bankOpen then btnDepAll:SetEnabled(false) end
-
-            local btnDepUniq = bankSubmenu:CreateButton(EMB.Strings.DepositUnique, function()
+            AddBankOption(EMB.Strings.Withdraw, function()
+                EMB.WithdrawSet(setID, false)
+            end)
+            AddBankOption(EMB.Strings.DepositUnique, function()
                 EMB.DepositSet(setID, true)
             end)
-            if not bankOpen then btnDepUniq:SetEnabled(false) end
-
-            local btnWthAll = bankSubmenu:CreateButton(EMB.Strings.WithdrawAll, function()
-                EMB.WithdrawSet(setID)
+            AddBankOption(EMB.Strings.WithdrawUnique, function()
+                EMB.WithdrawSet(setID, true)
             end)
-            if not bankOpen then btnWthAll:SetEnabled(false) end
-
-            bankSubmenu:CreateDivider()
-
-            local btnDepOth = bankSubmenu:CreateButton(EMB.Strings.DepositOthers, function()
+            AddBankOption(EMB.Strings.DepositAll, function()
                 EMB.DepositOtherSets(setID)
             end)
-            if not bankOpen then btnDepOth:SetEnabled(false) end
-
-            local btnWthOth = bankSubmenu:CreateButton(EMB.Strings.WithdrawOthers, function()
+            AddBankOption(EMB.Strings.WithdrawAll, function()
                 EMB.WithdrawOtherSets(setID)
             end)
-            if not bankOpen then btnWthOth:SetEnabled(false) end
-
-            -- Direct 1-click bank buttons when bank is open
-            if bankOpen then
-                rootDescription:CreateDivider()
-                rootDescription:CreateButton(EMB.Strings.DepositAll, function()
-                    EMB.DepositSet(setID, false)
-                end)
-                rootDescription:CreateButton(EMB.Strings.WithdrawAll, function()
-                    EMB.WithdrawSet(setID)
-                end)
-            end
         end)
         return
     end
@@ -896,61 +839,43 @@ local function OpenContextMenu(anchorButton, setID)
                 end
             end
         },
-        { text = "", isTitle = true, notCheckable = true },
         {
-            text = EMB.Strings.Bank,
-            hasArrow = true,
+            text = EMB.Strings.Deposit,
             notCheckable = true,
             disabled = not bankOpen,
-            menuList = {
-                {
-                    text = EMB.Strings.DepositAll,
-                    notCheckable = true,
-                    disabled = not bankOpen,
-                    func = function() EMB.DepositSet(setID, false) end
-                },
-                {
-                    text = EMB.Strings.DepositUnique,
-                    notCheckable = true,
-                    disabled = not bankOpen,
-                    func = function() EMB.DepositSet(setID, true) end
-                },
-                {
-                    text = EMB.Strings.WithdrawAll,
-                    notCheckable = true,
-                    disabled = not bankOpen,
-                    func = function() EMB.WithdrawSet(setID) end
-                },
-                { text = "", isTitle = true, notCheckable = true },
-                {
-                    text = EMB.Strings.DepositOthers,
-                    notCheckable = true,
-                    disabled = not bankOpen,
-                    func = function() EMB.DepositOtherSets(setID) end
-                },
-                {
-                    text = EMB.Strings.WithdrawOthers,
-                    notCheckable = true,
-                    disabled = not bankOpen,
-                    func = function() EMB.WithdrawOtherSets(setID) end
-                },
-            }
-        }
-    }
-
-    if bankOpen then
-        table.insert(menu, { text = "", isTitle = true, notCheckable = true })
-        table.insert(menu, {
+            func = function() EMB.DepositSet(setID, false) end
+        },
+        {
+            text = EMB.Strings.Withdraw,
+            notCheckable = true,
+            disabled = not bankOpen,
+            func = function() EMB.WithdrawSet(setID, false) end
+        },
+        {
+            text = EMB.Strings.DepositUnique,
+            notCheckable = true,
+            disabled = not bankOpen,
+            func = function() EMB.DepositSet(setID, true) end
+        },
+        {
+            text = EMB.Strings.WithdrawUnique,
+            notCheckable = true,
+            disabled = not bankOpen,
+            func = function() EMB.WithdrawSet(setID, true) end
+        },
+        {
             text = EMB.Strings.DepositAll,
             notCheckable = true,
-            func = function() EMB.DepositSet(setID, false) end
-        })
-        table.insert(menu, {
+            disabled = not bankOpen,
+            func = function() EMB.DepositOtherSets(setID) end
+        },
+        {
             text = EMB.Strings.WithdrawAll,
             notCheckable = true,
-            func = function() EMB.WithdrawSet(setID) end
-        })
-    end
+            disabled = not bankOpen,
+            func = function() EMB.WithdrawOtherSets(setID) end
+        },
+    }
 
     EasyMenu(menu, dropdownFrame, "cursor", 0, 0, "MENU")
 end
@@ -1089,9 +1014,9 @@ SlashCmdList["EQUIPMENTMANAGERBANK"] = function(msg)
     elseif cmd == "help" then
         PrintMessage("Commands:")
         PrintMessage("  /eqbank - Toggle Character Frame Equipment Manager")
-        PrintMessage("  /eqbank deposit <SetName> - Deposit all items for set into bank")
-        PrintMessage("  /eqbank withdraw <SetName> - Withdraw all items for set from bank")
-        PrintMessage("  Right-click any equipment set in Equipment Manager for Outfitter bank options.")
+        PrintMessage("  /eqbank deposit <SetName> - Deposit equipped items for a set")
+        PrintMessage("  /eqbank withdraw <SetName> - Withdraw set items from the bank")
+        PrintMessage("  Right-click an equipment set for equip and bank options.")
     else
         -- Default: open Equipment Manager
         if PaperDollFrame_SetSidebar and CharacterFrame then
