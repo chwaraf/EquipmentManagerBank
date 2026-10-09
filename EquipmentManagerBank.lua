@@ -1272,6 +1272,38 @@ local function HookTooltipRefreshers()
     end
 end
 
+local function UpdateActionButtonEquippedCheck(button)
+    if not button then return end
+    if InCombatLockdown and InCombatLockdown() then return end
+
+    local setID = GetEquipmentSetIDFromActionButton(button)
+    if not setID then
+        if button._embEquippedSetCheck then
+            button._embEquippedSetCheck:Hide()
+        end
+        return
+    end
+    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetInfo) then return end
+
+    if not button._embEquippedSetCheck then
+        if not button.CreateTexture then return end
+        local check = button:CreateTexture(nil, "OVERLAY")
+        check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+        check:SetSize(16, 16)
+        local icon = button.icon or button.Icon
+        if icon then
+            check:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 0, 0)
+        else
+            check:SetPoint("TOPRIGHT", button, "TOPRIGHT", -3, -3)
+        end
+        check:Hide()
+        button._embEquippedSetCheck = check
+    end
+
+    local _, _, _, isEquipped = C_EquipmentSet.GetEquipmentSetInfo(setID)
+    button._embEquippedSetCheck:SetShown(isEquipped and true or false)
+end
+
 local function UpdateActionButtonBankMode(button)
     if not button or not button.GetAttribute or not button.SetAttribute then return end
     if InCombatLockdown and InCombatLockdown() then return end
@@ -1345,6 +1377,7 @@ local function RegisterActionBarButton(button)
     end
 
     UpdateActionButtonBankMode(button)
+    UpdateActionButtonEquippedCheck(button)
 end
 
 local actionButtonUpdateHooks = {}
@@ -1504,6 +1537,9 @@ eventFrame:RegisterEvent("BANKFRAME_CLOSED")
 eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+for _, eventName in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "EQUIPMENT_SWAP_FINISHED", "EQUIPMENT_SETS_CHANGED" }) do
+    pcall(eventFrame.RegisterEvent, eventFrame, eventName)
+end
 
 eventFrame:SetScript("OnEvent", function(self, event, arg1, ...)
     if event == "PLAYER_LOGIN" then
@@ -1525,6 +1561,8 @@ eventFrame:SetScript("OnEvent", function(self, event, arg1, ...)
         HookActionBarButtons()
     elseif event == "ACTIONBAR_SLOT_CHANGED" or event == "PLAYER_REGEN_ENABLED" then
         HookBankFrameVisibility()
+        HookActionBarButtons()
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" or event == "EQUIPMENT_SWAP_FINISHED" or event == "EQUIPMENT_SETS_CHANGED" then
         HookActionBarButtons()
     elseif event == "PLAYER_REGEN_DISABLED" then
         CancelTransfers(EMB.Strings.TransferInterruptedCombat)
