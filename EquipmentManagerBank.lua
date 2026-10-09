@@ -1137,20 +1137,41 @@ local actionButtonPrefixes = {
     "OverrideActionBarButton",
 }
 
+local function AppendTooltipLines(tooltip, lines)
+    if not tooltip or not tooltip.AddLine then return end
+
+    tooltip:AddLine(" ")
+    for _, line in ipairs(lines) do
+        tooltip:AddLine(line, 1, 0.82, 0.1, true)
+    end
+    tooltip:Show()
+end
+
 local function AppendSetTooltipHelp(button, lines)
-    if not GameTooltip or not GameTooltip.AddLine then return end
+    if not GameTooltip then return end
 
     local ownedByButton = GameTooltip.IsOwned and GameTooltip:IsOwned(button)
     if not ownedByButton and GameTooltip.GetOwner then
         ownedByButton = GameTooltip:GetOwner() == button
     end
-    if not ownedByButton then return end
-
-    GameTooltip:AddLine(" ")
-    for _, line in ipairs(lines) do
-        GameTooltip:AddLine(line, 1, 0.82, 0.1, true)
+    if ownedByButton then
+        AppendTooltipLines(GameTooltip, lines)
     end
-    GameTooltip:Show()
+end
+
+local function GetActionInfoForSlot(actionSlot)
+    local actionType, actionID
+    if GetActionInfo then
+        actionType, actionID = GetActionInfo(actionSlot)
+    end
+    if not actionType and C_ActionBar and C_ActionBar.GetActionInfo then
+        actionType, actionID = C_ActionBar.GetActionInfo(actionSlot)
+    end
+    if type(actionType) == "table" then
+        actionID = actionType.actionID or actionType.id or actionID
+        actionType = actionType.actionType or actionType.type
+    end
+    return actionType, actionID
 end
 
 local function GetEquipmentSetIDFromActionButton(button)
@@ -1163,24 +1184,57 @@ local function GetEquipmentSetIDFromActionButton(button)
     end
     if not actionSlot then return nil end
 
-    local actionType, actionID
-    if GetActionInfo then
-        actionType, actionID = GetActionInfo(actionSlot)
-    end
-    if not actionType and C_ActionBar and C_ActionBar.GetActionInfo then
-        actionType, actionID = C_ActionBar.GetActionInfo(actionSlot)
-    end
-
-    if type(actionType) == "table" then
-        actionID = actionType.actionID or actionType.id or actionID
-        actionType = actionType.actionType or actionType.type
-    end
-
+    local actionType, actionID = GetActionInfoForSlot(actionSlot)
     if actionType ~= "equipmentset" then return nil end
     if type(actionID) == "string" and C_EquipmentSet and C_EquipmentSet.GetEquipmentSetID then
         actionID = C_EquipmentSet.GetEquipmentSetID(actionID)
     end
     return actionID
+end
+
+local tooltipMethodHooks = {
+    actionBar = false,
+    equipmentManager = false,
+}
+
+local function HookTooltipRefreshers()
+    if not tooltipMethodHooks.actionBar and ActionBarActionButtonMixin and ActionBarActionButtonMixin.SetTooltip then
+        local ok = pcall(hooksecurefunc, ActionBarActionButtonMixin, "SetTooltip", function(button)
+            if GetEquipmentSetIDFromActionButton(button) then
+                AppendTooltipLines(GameTooltip, {
+                    EMB.Strings.TooltipEquip,
+                    EMB.Strings.TooltipActionBarRightClick,
+                    EMB.Strings.TooltipActionBarModifiedRightClick,
+                })
+            end
+        end)
+        tooltipMethodHooks.actionBar = ok
+    end
+
+    if not tooltipMethodHooks.actionBar and GameTooltip and GameTooltip.SetAction then
+        local ok = pcall(hooksecurefunc, GameTooltip, "SetAction", function(tooltip, actionSlot)
+            local actionType = GetActionInfoForSlot(actionSlot)
+            if actionType == "equipmentset" then
+                AppendTooltipLines(tooltip, {
+                    EMB.Strings.TooltipEquip,
+                    EMB.Strings.TooltipActionBarRightClick,
+                    EMB.Strings.TooltipActionBarModifiedRightClick,
+                })
+            end
+        end)
+        tooltipMethodHooks.actionBar = ok
+    end
+
+    if not tooltipMethodHooks.equipmentManager and GameTooltip and GameTooltip.SetEquipmentSet then
+        local ok = pcall(hooksecurefunc, GameTooltip, "SetEquipmentSet", function(tooltip)
+            AppendTooltipLines(tooltip, {
+                EMB.Strings.TooltipEquip,
+                EMB.Strings.TooltipManagerRightClick,
+                EMB.Strings.TooltipBankRequired,
+            })
+        end)
+        tooltipMethodHooks.equipmentManager = ok
+    end
 end
 
 local function UpdateActionButtonBankMode(button)
@@ -1245,7 +1299,7 @@ local function RegisterActionBarButton(button)
     if not button._embActionBarTooltipHooked then
         button._embActionBarTooltipHooked = true
         button:HookScript("OnEnter", function(self)
-            if GetEquipmentSetIDFromActionButton(self) then
+            if not tooltipMethodHooks.actionBar and GetEquipmentSetIDFromActionButton(self) then
                 AppendSetTooltipHelp(self, {
                     EMB.Strings.TooltipEquip,
                     EMB.Strings.TooltipActionBarRightClick,
@@ -1262,6 +1316,8 @@ local actionButtonUpdateHooks = {}
 local actionButtonMixinUpdateHooked = false
 
 local function HookActionBarButtons()
+    HookTooltipRefreshers()
+
     if ActionBarActionButtonMixin and ActionBarActionButtonMixin.UpdateAction and not actionButtonMixinUpdateHooked then
         local ok = pcall(hooksecurefunc, ActionBarActionButtonMixin, "UpdateAction", function(button)
             RegisterActionBarButton(button)
@@ -1323,16 +1379,19 @@ local function RegisterButtonForRightClick(button)
     if button.HookScript and not button._embManagerTooltipHooked then
         button._embManagerTooltipHooked = true
         button:HookScript("OnEnter", function(self)
-            AppendSetTooltipHelp(self, {
-                EMB.Strings.TooltipEquip,
-                EMB.Strings.TooltipManagerRightClick,
-                EMB.Strings.TooltipBankRequired,
-            })
+            if not tooltipMethodHooks.equipmentManager then
+                AppendSetTooltipHelp(self, {
+                    EMB.Strings.TooltipEquip,
+                    EMB.Strings.TooltipManagerRightClick,
+                    EMB.Strings.TooltipBankRequired,
+                })
+            end
         end)
     end
 end
 
 local function HookEquipmentManagerPane()
+    HookTooltipRefreshers()
     local pane = (PaperDollFrame and PaperDollFrame.EquipmentManagerPane) or PaperDollEquipmentManagerPane
 
     -- Hook ScrollBox element initialization in modern UI
