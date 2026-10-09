@@ -16,6 +16,8 @@ EMB.Strings = {
     Withdraw = "Withdraw",
     DepositUnique = "Deposit Unique",
     WithdrawUnique = "Withdraw Unique",
+    DepositOther = "Deposit Other",
+    WithdrawOther = "Withdraw Other",
     DepositAll = "Deposit All",
     WithdrawAll = "Withdraw All",
     DepositFullError = "Can't deposit %s because all bank bags are full",
@@ -874,76 +876,69 @@ function EMB.WithdrawAllSets()
     StartTransfers(actions, string.format(EMB.Strings.Withdrawing, #actions, "items", setName))
 end
 
--- Ctrl+Shift-right-click uses the selected set as the one to preserve. If other
--- set items are in the bank, withdraw them; otherwise deposit matching bag items.
-function EMB.TransferOtherSetItems(setID)
+local function GetSetItemTransfers(bagIDs, itemIDs, actionType)
+    local transfers = {}
+    for _, bagID in ipairs(bagIDs) do
+        local numSlots = Container.GetNumSlots(bagID)
+        for slot = 1, numSlots do
+            local itemID = Container.GetItemID(bagID, slot)
+            if itemID and itemIDs[itemID] then
+                local info = Container.GetItemInfo(bagID, slot)
+                if not (info and info.isLocked) then
+                    table.insert(transfers, {
+                        actionType = actionType,
+                        fromBag = bagID,
+                        fromSlot = slot,
+                        itemID = itemID,
+                        itemLink = Container.GetItemLink(bagID, slot),
+                    })
+                end
+            end
+        end
+    end
+    return transfers
+end
+
+function EMB.WithdrawOtherSets(setID)
     if not IsBankOpen() then
         PrintMessage(EMB.Strings.MustBeAtBank)
         return
     end
 
     local otherSetItemIDs = GetOtherSetOnlyItemIDs(setID)
-    local toWithdraw = {}
-    for _, bagID in ipairs(GetBankBags()) do
-        local numSlots = Container.GetNumSlots(bagID)
-        for slot = 1, numSlots do
-            local itemID = Container.GetItemID(bagID, slot)
-            if itemID and otherSetItemIDs[itemID] then
-                local info = Container.GetItemInfo(bagID, slot)
-                if not (info and info.isLocked) then
-                    table.insert(toWithdraw, {
-                        actionType = "BANK_TO_BAG",
-                        fromBag = bagID,
-                        fromSlot = slot,
-                        itemID = itemID,
-                        itemLink = Container.GetItemLink(bagID, slot),
-                    })
-                end
-            end
-        end
-    end
-
-    if #toWithdraw > 0 then
-        local emptyPlayerSlots = GetEmptyPlayerBagSlots()
-        if #emptyPlayerSlots < #toWithdraw then
-            PrintMessage(string.format("Can't withdraw all items: only %d bag slots free, %d needed.", #emptyPlayerSlots, #toWithdraw))
-            while #toWithdraw > #emptyPlayerSlots do
-                table.remove(toWithdraw)
-            end
-            if #toWithdraw == 0 then return end
-        end
-
-        local actions = {}
-        for i, item in ipairs(toWithdraw) do
-            local targetSlot = emptyPlayerSlots[i]
-            item.toBag = targetSlot.bag
-            item.toSlot = targetSlot.slot
-            table.insert(actions, item)
-        end
-        StartTransfers(actions, string.format(EMB.Strings.WithdrawingOtherSets, #actions))
+    local toWithdraw = GetSetItemTransfers(GetBankBags(), otherSetItemIDs, "BANK_TO_BAG")
+    if #toWithdraw == 0 then
+        PrintMessage(EMB.Strings.NoOtherSetItems)
         return
     end
 
-    local toDeposit = {}
-    for _, bagID in ipairs(GetPlayerBags()) do
-        local numSlots = Container.GetNumSlots(bagID)
-        for slot = 1, numSlots do
-            local itemID = Container.GetItemID(bagID, slot)
-            if itemID and otherSetItemIDs[itemID] then
-                local info = Container.GetItemInfo(bagID, slot)
-                if not (info and info.isLocked) then
-                    table.insert(toDeposit, {
-                        actionType = "BAG_TO_BANK",
-                        fromBag = bagID,
-                        fromSlot = slot,
-                        itemID = itemID,
-                        itemLink = Container.GetItemLink(bagID, slot),
-                    })
-                end
-            end
+    local emptyPlayerSlots = GetEmptyPlayerBagSlots()
+    if #emptyPlayerSlots < #toWithdraw then
+        PrintMessage(string.format("Can't withdraw all items: only %d bag slots free, %d needed.", #emptyPlayerSlots, #toWithdraw))
+        while #toWithdraw > #emptyPlayerSlots do
+            table.remove(toWithdraw)
         end
+        if #toWithdraw == 0 then return end
     end
 
+    local actions = {}
+    for i, item in ipairs(toWithdraw) do
+        local targetSlot = emptyPlayerSlots[i]
+        item.toBag = targetSlot.bag
+        item.toSlot = targetSlot.slot
+        table.insert(actions, item)
+    end
+    StartTransfers(actions, string.format(EMB.Strings.WithdrawingOtherSets, #actions))
+end
+
+function EMB.DepositOtherSets(setID)
+    if not IsBankOpen() then
+        PrintMessage(EMB.Strings.MustBeAtBank)
+        return
+    end
+
+    local otherSetItemIDs = GetOtherSetOnlyItemIDs(setID)
+    local toDeposit = GetSetItemTransfers(GetPlayerBags(), otherSetItemIDs, "BAG_TO_BANK")
     if #toDeposit == 0 then
         PrintMessage(EMB.Strings.NoOtherSetItems)
         return
@@ -966,6 +961,29 @@ function EMB.TransferOtherSetItems(setID)
         table.insert(actions, item)
     end
     StartTransfers(actions, string.format(EMB.Strings.DepositingOtherSets, #actions))
+end
+
+-- Ctrl+Shift-right-click uses the selected set as the one to preserve. If other
+-- set items are in the bank, withdraw them; otherwise deposit matching bag items.
+function EMB.TransferOtherSetItems(setID)
+    if not IsBankOpen() then
+        PrintMessage(EMB.Strings.MustBeAtBank)
+        return
+    end
+
+    local otherSetItemIDs = GetOtherSetOnlyItemIDs(setID)
+    for _, bagID in ipairs(GetBankBags()) do
+        local numSlots = Container.GetNumSlots(bagID)
+        for slot = 1, numSlots do
+            local itemID = Container.GetItemID(bagID, slot)
+            if itemID and otherSetItemIDs[itemID] then
+                EMB.WithdrawOtherSets(setID)
+                return
+            end
+        end
+    end
+
+    EMB.DepositOtherSets(setID)
 end
 
 -------------------------------------------------------------------------------
@@ -1008,6 +1026,12 @@ local function OpenContextMenu(anchorButton, setID)
             end)
             AddBankOption(EMB.Strings.WithdrawUnique, function()
                 EMB.WithdrawSet(setID, true)
+            end)
+            AddBankOption(EMB.Strings.DepositOther, function()
+                EMB.DepositOtherSets(setID)
+            end)
+            AddBankOption(EMB.Strings.WithdrawOther, function()
+                EMB.WithdrawOtherSets(setID)
             end)
             AddBankOption(EMB.Strings.DepositAll, function()
                 EMB.DepositAllSets()
@@ -1058,6 +1082,18 @@ local function OpenContextMenu(anchorButton, setID)
             notCheckable = true,
             disabled = not bankOpen,
             func = function() EMB.WithdrawSet(setID, true) end
+        },
+        {
+            text = EMB.Strings.DepositOther,
+            notCheckable = true,
+            disabled = not bankOpen,
+            func = function() EMB.DepositOtherSets(setID) end
+        },
+        {
+            text = EMB.Strings.WithdrawOther,
+            notCheckable = true,
+            disabled = not bankOpen,
+            func = function() EMB.WithdrawOtherSets(setID) end
         },
         {
             text = EMB.Strings.DepositAll,
