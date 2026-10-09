@@ -19,6 +19,11 @@ EMB.Strings = {
     DepositOther = "Deposit Other",
     WithdrawOther = "Withdraw Other",
     DepositAll = "Deposit All",
+    TooltipEquip = "Left-click: Equip this set.",
+    TooltipManagerRightClick = "Right-click: Open set and bank options.",
+    TooltipBankRequired = "Bank actions are available only while a bank is open.",
+    TooltipActionBarRightClick = "At the bank, right-click: Withdraw this set if banked; otherwise deposit unique items from bags.",
+    TooltipActionBarModifiedRightClick = "At the bank, Ctrl+Shift+right-click: Transfer other-set items (withdraw if banked; otherwise deposit from bags).",
     WithdrawAll = "Withdraw All",
     DepositFullError = "Can't deposit %s because all bank bags are full",
     WithdrawFullError = "Can't withdraw %s because all bags are full",
@@ -1132,6 +1137,22 @@ local actionButtonPrefixes = {
     "OverrideActionBarButton",
 }
 
+local function AppendSetTooltipHelp(button, lines)
+    if not GameTooltip or not GameTooltip.AddLine then return end
+
+    local ownedByButton = GameTooltip.IsOwned and GameTooltip:IsOwned(button)
+    if not ownedByButton and GameTooltip.GetOwner then
+        ownedByButton = GameTooltip:GetOwner() == button
+    end
+    if not ownedByButton then return end
+
+    GameTooltip:AddLine(" ")
+    for _, line in ipairs(lines) do
+        GameTooltip:AddLine(line, 1, 0.82, 0.1, true)
+    end
+    GameTooltip:Show()
+end
+
 local function GetEquipmentSetIDFromActionButton(button)
     local actionSlot = button.action
     if not actionSlot and button.GetAttribute then
@@ -1221,6 +1242,19 @@ local function RegisterActionBarButton(button)
         end)
     end
 
+    if not button._embActionBarTooltipHooked then
+        button._embActionBarTooltipHooked = true
+        button:HookScript("OnEnter", function(self)
+            if GetEquipmentSetIDFromActionButton(self) then
+                AppendSetTooltipHelp(self, {
+                    EMB.Strings.TooltipEquip,
+                    EMB.Strings.TooltipActionBarRightClick,
+                    EMB.Strings.TooltipActionBarModifiedRightClick,
+                })
+            end
+        end)
+    end
+
     UpdateActionButtonBankMode(button)
 end
 
@@ -1284,6 +1318,17 @@ local function RegisterButtonForRightClick(button)
     if not button._embRegistered then
         button._embRegistered = true
         button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    end
+
+    if button.HookScript and not button._embManagerTooltipHooked then
+        button._embManagerTooltipHooked = true
+        button:HookScript("OnEnter", function(self)
+            AppendSetTooltipHelp(self, {
+                EMB.Strings.TooltipEquip,
+                EMB.Strings.TooltipManagerRightClick,
+                EMB.Strings.TooltipBankRequired,
+            })
+        end)
     end
 end
 
