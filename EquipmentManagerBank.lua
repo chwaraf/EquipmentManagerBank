@@ -1337,27 +1337,42 @@ local function UpdateActionButtonEquippedCheck(button)
     if InCombatLockdown and InCombatLockdown() then return end
 
     local setID = GetEquipmentSetIDFromActionButton(button)
-    if not setID then
+    if not setID or not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetInfo) then
         if button._embEquippedSetCheck then
             button._embEquippedSetCheck:Hide()
         end
+        if button._embEquippedSetCheckOutline then
+            button._embEquippedSetCheckOutline:Hide()
+        end
         return
     end
-    if not (C_EquipmentSet and C_EquipmentSet.GetEquipmentSetInfo) then return end
 
+    if not button.CreateTexture then return end
+    if not button._embEquippedSetCheckOutline then
+        button._embEquippedSetCheckOutline = button:CreateTexture(nil, "OVERLAY")
+        button._embEquippedSetCheckOutline:Hide()
+    end
     if not button._embEquippedSetCheck then
-        if not button.CreateTexture then return end
         button._embEquippedSetCheck = button:CreateTexture(nil, "OVERLAY")
         button._embEquippedSetCheck:Hide()
     end
 
+    local icon = button.icon or button.Icon or button
+    local outline = button._embEquippedSetCheckOutline
+    outline:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    outline:SetDrawLayer("OVERLAY", 6)
+    outline:SetSize(36, 36)
+    outline:SetVertexColor(0.22, 1.0, 0.08, 1.0)
+    outline:ClearAllPoints()
+    outline:SetPoint("CENTER", icon, "CENTER", 0, 0)
+
     local check = button._embEquippedSetCheck
     check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
     check:SetDrawLayer("OVERLAY", 7)
-    check:SetSize(24, 24)
+    check:SetSize(28, 28)
+    check:SetVertexColor(0.22, 1.0, 0.08, 1.0)
     check:ClearAllPoints()
-    local icon = button.icon or button.Icon
-    check:SetPoint("CENTER", icon or button, "CENTER", 0, 0)
+    check:SetPoint("CENTER", icon, "CENTER", 0, 0)
 
     local _, _, _, isEquipped, numItems, numEquipped = C_EquipmentSet.GetEquipmentSetInfo(setID)
     -- Treat up to four changed pieces as a close enough set match for the indicator.
@@ -1365,7 +1380,9 @@ local function UpdateActionButtonEquippedCheck(button)
         and type(numEquipped) == "number"
         and numItems > 0
         and (numItems - numEquipped) <= 4
-    check:SetShown((isEquipped and true) or (matchesWithTolerance and true) or false)
+    local isCloseMatch = (isEquipped and true) or (matchesWithTolerance and true) or false
+    outline:SetShown(isCloseMatch)
+    check:SetShown(isCloseMatch)
 end
 
 local function UpdateActionButtonBankMode(button)
