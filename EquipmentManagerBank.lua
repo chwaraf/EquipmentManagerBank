@@ -1137,11 +1137,33 @@ local actionButtonPrefixes = {
     "OverrideActionBarButton",
 }
 
+local function TooltipHasLine(tooltip, text)
+    if not tooltip or not tooltip.GetName or not tooltip.NumLines then return false end
+    local name = tooltip:GetName()
+    if not name then return false end
+
+    for index = 1, tooltip:NumLines() do
+        local fontString = _G[name .. "TextLeft" .. index]
+        if fontString and fontString:GetText() == text then
+            return true
+        end
+    end
+    return false
+end
+
 local function AppendTooltipLines(tooltip, lines)
     if not tooltip or not tooltip.AddLine then return end
 
-    tooltip:AddLine(" ")
+    local missingLines = {}
     for _, line in ipairs(lines) do
+        if not TooltipHasLine(tooltip, line) then
+            table.insert(missingLines, line)
+        end
+    end
+    if #missingLines == 0 then return end
+
+    tooltip:AddLine(" ")
+    for _, line in ipairs(missingLines) do
         tooltip:AddLine(line, 1, 0.82, 0.1, true)
     end
     tooltip:Show()
@@ -1174,7 +1196,7 @@ local function GetActionInfoForSlot(actionSlot)
     return actionType, actionID
 end
 
-local function GetEquipmentSetIDFromActionButton(button)
+local function GetActionSlotForButton(button)
     local actionSlot = button.action
     if not actionSlot and button.GetAttribute then
         actionSlot = button:GetAttribute("action")
@@ -1182,6 +1204,18 @@ local function GetEquipmentSetIDFromActionButton(button)
     if not actionSlot and ActionButton_GetPagedID then
         actionSlot = ActionButton_GetPagedID(button)
     end
+    return actionSlot
+end
+
+local function IsEquipmentSetActionButton(button)
+    local actionSlot = GetActionSlotForButton(button)
+    if not actionSlot then return false end
+    local actionType = GetActionInfoForSlot(actionSlot)
+    return actionType == "equipmentset"
+end
+
+local function GetEquipmentSetIDFromActionButton(button)
+    local actionSlot = GetActionSlotForButton(button)
     if not actionSlot then return nil end
 
     local actionType, actionID = GetActionInfoForSlot(actionSlot)
@@ -1193,14 +1227,15 @@ local function GetEquipmentSetIDFromActionButton(button)
 end
 
 local tooltipMethodHooks = {
-    actionBar = false,
+    actionBarMixin = false,
+    actionBarTooltip = false,
     equipmentManager = false,
 }
 
 local function HookTooltipRefreshers()
-    if not tooltipMethodHooks.actionBar and ActionBarActionButtonMixin and ActionBarActionButtonMixin.SetTooltip then
+    if not tooltipMethodHooks.actionBarMixin and ActionBarActionButtonMixin and ActionBarActionButtonMixin.SetTooltip then
         local ok = pcall(hooksecurefunc, ActionBarActionButtonMixin, "SetTooltip", function(button)
-            if GetEquipmentSetIDFromActionButton(button) then
+            if IsEquipmentSetActionButton(button) then
                 AppendTooltipLines(GameTooltip, {
                     EMB.Strings.TooltipEquip,
                     EMB.Strings.TooltipActionBarRightClick,
@@ -1208,10 +1243,10 @@ local function HookTooltipRefreshers()
                 })
             end
         end)
-        tooltipMethodHooks.actionBar = ok
+        tooltipMethodHooks.actionBarMixin = ok
     end
 
-    if not tooltipMethodHooks.actionBar and GameTooltip and GameTooltip.SetAction then
+    if not tooltipMethodHooks.actionBarTooltip and GameTooltip and GameTooltip.SetAction then
         local ok = pcall(hooksecurefunc, GameTooltip, "SetAction", function(tooltip, actionSlot)
             local actionType = GetActionInfoForSlot(actionSlot)
             if actionType == "equipmentset" then
@@ -1222,7 +1257,7 @@ local function HookTooltipRefreshers()
                 })
             end
         end)
-        tooltipMethodHooks.actionBar = ok
+        tooltipMethodHooks.actionBarTooltip = ok
     end
 
     if not tooltipMethodHooks.equipmentManager and GameTooltip and GameTooltip.SetEquipmentSet then
@@ -1299,7 +1334,7 @@ local function RegisterActionBarButton(button)
     if not button._embActionBarTooltipHooked then
         button._embActionBarTooltipHooked = true
         button:HookScript("OnEnter", function(self)
-            if not tooltipMethodHooks.actionBar and GetEquipmentSetIDFromActionButton(self) then
+            if IsEquipmentSetActionButton(self) then
                 AppendSetTooltipHelp(self, {
                     EMB.Strings.TooltipEquip,
                     EMB.Strings.TooltipActionBarRightClick,
@@ -1379,13 +1414,11 @@ local function RegisterButtonForRightClick(button)
     if button.HookScript and not button._embManagerTooltipHooked then
         button._embManagerTooltipHooked = true
         button:HookScript("OnEnter", function(self)
-            if not tooltipMethodHooks.equipmentManager then
-                AppendSetTooltipHelp(self, {
-                    EMB.Strings.TooltipEquip,
-                    EMB.Strings.TooltipManagerRightClick,
-                    EMB.Strings.TooltipBankRequired,
-                })
-            end
+            AppendSetTooltipHelp(self, {
+                EMB.Strings.TooltipEquip,
+                EMB.Strings.TooltipManagerRightClick,
+                EMB.Strings.TooltipBankRequired,
+            })
         end)
     end
 end
